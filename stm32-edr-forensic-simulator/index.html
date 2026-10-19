@@ -4,18 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#17324d">
-  <title>EDR Forensic Console | STM32 Simulation</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; img-src 'self' data:;">
+  <title>Automotive Event Data Recorder — Forensics &amp; Provisioning Console (Demo)</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><div class="brand-icon">EDR</div><div><strong>EVENT DATA RECORDER</strong><small>STM32 · SECURITY SIMULATION CONSOLE</small></div></div>
-  <div class="top-right"><span class="pill"><i class="dot green"></i> SIMULATION MODE</span><span id="clock" class="clock">--:--:-- UTC</span></div>
+  <div class="brand"><div class="brand-icon">EDR</div><div><strong>AUTOMOTIVE EVENT DATA RECORDER</strong><small>Forensics &amp; Provisioning Console (Demo)</small></div></div>
+  <div class="top-right"><span class="pill"><i class="dot green"></i> DEMO MODE</span><span id="clock" class="clock">--:--:-- UTC</span></div>
 </header>
-<div class="notice"><strong>DEMO ENVIRONMENT</strong><span>All vehicle telemetry and attack events are simulated. No physical ECU or vehicle is connected.</span></div>
+<div class="notice"><strong>DEMO / EDUCATIONAL ENVIRONMENT</strong><span>This site is an educational simulation only. It demonstrates EDR concepts and cryptographic workflows; it is NOT a production or tamper-proof system. Do not rely on this demo for real evidence collection.</span></div>
 <main>
   <section class="page-heading">
-    <div><p class="eyebrow">DIGITAL FORENSICS / VEHICLE SYSTEMS</p><h1>EDR Security &amp; Forensic Dashboard</h1><p class="subheading">Record events, freeze incident evidence, demonstrate tampering, and verify cryptographic integrity.</p></div>
+    <div><p class="eyebrow">DIGITAL FORENSICS / VEHICLE SYSTEMS</p><h1>EDR Forensics &amp; Provisioning Console</h1><p class="subheading">An educational simulation of an automotive Event Data Recorder's evidence capture and attestation workflow.</p></div>
     <div class="session"><span class="label">SESSION ID</span><code id="sessionId">EDR-DEMO-0001</code></div>
   </section>
 
@@ -28,7 +29,7 @@
       <article class="metric"><span class="metric-label">VEHICLE SPEED</span><div><strong id="speedMetric">0</strong><span>km/h</span></div><small id="speedState">Vehicle stationary</small></article>
       <article class="metric"><span class="metric-label">LONGITUDINAL ACCEL.</span><div><strong id="accelMetric">0.00</strong><span>g</span></div><small>Simulated IMU reading</small></article>
       <article class="metric"><span class="metric-label">RECORDED SAMPLES</span><div><strong id="sampleMetric">0</strong><span>samples</span></div><small>Current rolling buffer</small></article>
-      <article class="metric"><span class="metric-label">INTEGRITY STATUS</span><div><strong id="integrityMetric" class="status-text">NOT CHECKED</strong></div><small id="integrityHint">Run verification after recording</small></article>
+      <article class="metric"><span class="metric-label">INTEGRITY STATUS</span><div><strong id="integrityMetric" class="status-text">NOT CHECKED</strong></div><small id="integrityHint">Run verification after capture</small></article>
     </div>
     <div class="grid two">
       <article class="card">
@@ -50,24 +51,24 @@
     </div>
     <article class="card">
       <div class="card-title"><div><p class="eyebrow">RECENT ACTIVITY</p><h2>System event log</h2></div><button id="clearActivity" class="btn small">Clear view</button></div>
-      <div class="table-scroll"><table><thead><tr><th>Timestamp (UTC)</th><th>Event</th><th>Details</th><th>State</th></tr></thead><tbody id="activityRows"><tr><td colspan="4" class="empty">No activity yet. Start telemetry or record an event.</td></tr></tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th>Timestamp (UTC)</th><th>Event</th><th>Details</th><th>State</th></tr></thead><tbody id="activityRows"><tr><td colspan="4" class="empty">No activity yet.</td></tr></tbody></table></div>
     </article>
   </section>
 
   <section id="recording" class="tab-panel">
-    <div class="section-intro"><p class="eyebrow">01 / EVENT RECORDING</p><h2>Rolling buffer &amp; protected incident record</h2><p>Samples are generated in the browser. When an incident is triggered, the pre-event samples and post-event samples are copied into an incident record and hash-chained.</p></div>
+    <div class="section-intro"><p class="eyebrow">01 / EVENT RECORDING</p><h2>Rolling buffer &amp; protected incident record</h2><p>Samples are generated in the browser. When an incident is triggered, the most recent samples are preserved as a frozen evidence bundle.</p></div>
     <div class="grid two">
       <article class="card"><div class="card-title"><h2>Recorder controls</h2><span id="recorderState" class="badge">IDLE</span></div>
-        <div class="control-list"><div><span>Sample interval</span><strong>1 second</strong></div><div><span>Buffer retention</span><strong>60 samples max</strong></div><div><span>Event state</span><strong id="eventState">No active event</strong></div><div><span>Protected records</span><strong id="protectedCount">0</strong></div></div>
+        <div class="control-list"><div><span>Sample interval</span><strong>1 second</strong></div><div><span>Buffer retention</span><strong>60 samples max</strong></div></div>
         <div class="button-row"><button id="addSample" class="btn primary">Add sample</button><button id="exportSamples" class="btn">Export buffer JSON</button></div>
       </article>
       <article class="card"><div class="card-title"><h2>Last captured event</h2><span class="badge">LOCAL SESSION</span></div><div id="lastEventDetails" class="event-summary empty">No incident captured yet.</div></article>
     </div>
-    <article class="card"><div class="card-title"><div><p class="eyebrow">BUFFER VIEW</p><h2>Latest samples</h2></div><span id="bufferCount" class="badge">0 samples</span></div><div class="table-scroll"><table><thead><tr><th>Time (UTC)</th><th>Speed km/h</th><th>Accel. g</th><th>Yaw °/s</th><th>Source</th></tr></thead><tbody id="sampleRows"><tr><td colspan="5" class="empty">No samples generated yet.</td></tr></tbody></table></div></article>
+    <article class="card"><div class="card-title"><div><p class="eyebrow">BUFFER VIEW</p><h2>Latest samples</h2></div><span id="bufferCount" class="badge">0 samples</span></div><div class="table-scroll"><table><thead><tr><th>Time</th><th>Speed (km/h)</th><th>Accel (g)</th><th>Yaw (dps)</th></tr></thead><tbody id="sampleRows"><tr><td colspan="4" class="empty">No samples yet.</td></tr></tbody></table></div></article>
   </section>
 
   <section id="security" class="tab-panel">
-    <div class="section-intro"><p class="eyebrow">02 / CRYPTOGRAPHIC INTEGRITY</p><h2>Hash chain &amp; signing-key demonstration</h2><p>Each evidence record includes the previous record's hash. A change to an earlier record should break verification of the chain. A browser-generated ECDSA P-256 key signs a challenge to demonstrate public-key verification.</p></div>
+    <div class="section-intro"><p class="eyebrow">02 / CRYPTOGRAPHIC INTEGRITY</p><h2>Hash chain &amp; signing-key demonstration</h2><p>Each evidence record includes the previous record's hash. A chain verification process demonstrates integrity-checking of captured records.</p></div>
     <div class="grid two">
       <article class="card"><div class="card-title"><h2>Evidence integrity</h2><span class="badge">SHA-256</span></div>
         <div class="crypto-status"><span class="big-status" id="chainStatus">NOT VERIFIED</span><p id="chainMessage">Capture an incident or add records, then verify the chain.</p></div>
@@ -81,21 +82,20 @@
         <div id="keyResult" class="key-result">No demo key generated.</div>
       </article>
     </div>
-    <article class="card"><div class="card-title"><h2>Evidence chain inspector</h2><span id="chainCount" class="badge">0 records</span></div><div class="table-scroll"><table><thead><tr><th>#</th><th>Record type</th><th>Previous hash</th><th>Record hash</th><th>Integrity</th></tr></thead><tbody id="chainRows"><tr><td colspan="5" class="empty">No chain records yet.</td></tr></tbody></table></div></article>
   </section>
 
   <section id="forensics" class="tab-panel">
-    <div class="section-intro"><p class="eyebrow">03 / FORENSIC EVIDENCE</p><h2>Incident review &amp; evidence export</h2><p>Review the captured event, inspect its timeline, verify its evidence chain, and export a JSON bundle for a report or further analysis.</p></div>
+    <div class="section-intro"><p class="eyebrow">03 / FORENSIC EVIDENCE</p><h2>Incident review &amp; evidence export</h2><p>Review the captured event, inspect its timeline, verify its evidence chain, and export a signed JSON bundle for offline verification.</p></div>
     <div class="metrics compact">
       <article class="metric"><span class="metric-label">INCIDENTS</span><div><strong id="incidentMetric">0</strong></div></article>
       <article class="metric"><span class="metric-label">CHAIN RECORDS</span><div><strong id="chainMetric">0</strong></div></article>
       <article class="metric"><span class="metric-label">TAMPER ALERTS</span><div><strong id="tamperMetric">0</strong></div></article>
       <article class="metric"><span class="metric-label">KEY STATUS</span><div><strong id="keyMetric" class="status-text">NOT GENERATED</strong></div></article>
     </div>
-    <article class="card"><div class="card-title"><div><p class="eyebrow">INCIDENT REGISTER</p><h2>Captured incidents</h2></div><div class="button-row"><button id="verifyForensic" class="btn">Verify all evidence</button><button id="exportReport" class="btn primary">Export forensic bundle</button></div></div><div class="table-scroll"><table><thead><tr><th>Incident ID</th><th>Trigger time</th><th>Severity</th><th>Samples</th><th>Integrity</th><th>Action</th></tr></thead><tbody id="incidentRows"><tr><td colspan="6" class="empty">No incidents captured yet.</td></tr></tbody></table></div></article>
-    <article class="card"><div class="card-title"><h2>Forensic notes</h2><span class="badge">SESSION REPORT</span></div><textarea id="forensicNotes" placeholder="Add analyst notes: observed anomaly, test steps, expected result, actual result…"></textarea><div class="button-row end"><button id="saveNotes" class="btn">Save notes to session</button><span id="notesState" class="small-note">Notes remain in this browser session.</span></div></article>
+    <article class="card"><div class="card-title"><div><p class="eyebrow">INCIDENT REGISTER</p><h2>Captured incidents</h2></div><div class="button-row"><button id="verifyForensic" class="btn">Verify selected incident</button><button id="exportReport" class="btn primary">Export forensic bundle</button></div></div>
+    <article class="card"><div class="card-title"><h2>Forensic notes</h2><span class="badge">SESSION REPORT</span></div><textarea id="forensicNotes" placeholder="Add analyst notes: observed anomaly, actions taken, chain-of-custody remarks"></textarea></article>
   </section>
-  <footer><span>STM32 EDR Security Simulation · Educational prototype</span><span>Cryptographic hashes detect changes; they do not alone prevent deletion or prove real-world authenticity.</span></footer>
+  <footer><span>Automotive Event Data Recorder — Forensics &amp; Provisioning Console (Educational prototype)</span><span>Cryptographic hashes demonstrate integrity detection; they do not alone prevent deletion or prove real-world authenticity.</span></footer>
 </main>
 <script src="app.js"></script>
 </body>
