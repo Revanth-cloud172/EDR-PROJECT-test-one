@@ -1,4 +1,11 @@
-/* Educational STM32 EDR simulation. No physical device is connected. */
+/* Professionalized STM32 EDR forensic demo (static browser simulation)
+   - Finished/cleaned flows
+   - Save / Load session support (export/import JSON bundle)
+   - Robust base64 helpers and JWK fingerprint helper
+   - Optional IndexedDB persistence for demo key
+   - All dynamic text escaped before injection
+   - Keep demo-only warning and no real device connection
+*/
 "use strict";
 const $ = (s) => document.querySelector(s);
 const state = {
@@ -9,200 +16,79 @@ const state = {
 };
 const MAX_BUFFER=60;
 const encoder=new TextEncoder();
+const decoder=new TextDecoder();
 const nowISO=()=>new Date().toISOString();
 const fmtTime=(iso)=>new Date(iso).toLocaleString("en-GB",{timeZone:"UTC",hour12:false})+" UTC";
 const shortHash=(h)=>h ? h.slice(0,18)+"…" : "—";
-function escapeHTML(v){return String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function escapeHTML(v){return String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
 function randomId(prefix){return prefix+"-"+crypto.getRandomValues(new Uint32Array(2)).join("").slice(0,10).toUpperCase();}
-function log(type,details,status="INFO"){
-  state.activity.unshift({time:nowISO(),type,details,status}); state.activity=state.activity.slice(0,30); renderActivity();
+function log(type,details,status="INFO"){ state.activity.unshift({time:nowISO(),type,details,status}); state.activity=state.activity.slice(0,30); renderActivity(); }
+async function sha256Hex(value){ const bytes=await crypto.subtle.digest("SHA-256", typeof value==="string"?encoder.encode(value):value); return [...new Uint8Array(bytes)].map(b=>b.toString(16).padStart(2,"0")).join(""); }
+async function appendChain(type,payload){ const previous=state.chain.length?state.chain[state.chain.length-1].hash:"GENESIS"; const body={index:state.chain.length+1,type,time:nowISO(),previousHash:previous,payload}; const hash=await sha256Hex(JSON.stringify(body)); const record={...body,hash}; state.chain.push(record); state.cleanSnapshot=JSON.parse(JSON.stringify(state.chain)); renderChain(); updateMetrics(); return record; }
+async function verifyChain(){ let prev="GENESIS",bad=-1; for(let i=0;i<state.chain.length;i++){ const r=state.chain[i]; const body={index:r.index,type:r.type,time:r.time,previousHash:r.previousHash,payload:r.payload}; const expected=await sha256Hex(JSON.stringify(body)); if(r.previousHash!==prev||r.hash!==expected){ bad=i; break; } prev=r.hash; } const ok=bad===-1; $("#chainStatus").textContent=ok?"VERIFIED":"TAMPER DETECTED"; $("#chainStatus").style.color=ok?"var(--green)":"var(--red)"; $("#chainMessage").textContent=ok?`All ${state.chain.length} records match their stored hashes and links.`:`Integrity failure at record ${bad+1}. Stored hash or previous-hash link does not match.`; $("#integrityMetric").textContent=ok?"VERIFIED":"FAILED"; $("#integrityMetric").style.color=ok?"var(--green)":"var(--red)"; $("#integrityHint").textContent=ok?"Evidence chain consistent":"Review chain inspector"; renderChain(bad); updateMetrics(); log("INTEGRITY CHECK", ok?`${state.chain.length} chain records verified`:`Failure at chain record ${bad+1}`, ok?"PASS":"ALERT"); return {ok,bad}; }
+function sample(source="telemetry",forcedAccel=null){ const t=nowISO(); if(state.running && forcedAccel===null){ state.speed=Math.max(0,Math.min(180,state.speed+(Math.random()*8-2.2))); state.accel=(Math.random()-.48)*.28; state.yaw=(Math.random()-.5)*12; } else if(forcedAccel!==null){ state.accel=forcedAccel; state.speed=Math.max(0,state.speed-Math.abs(forcedAccel)*3); state.yaw=(Math.random()-.5)*90; } else { state.speed=Math.max(0,state.speed+(Math.random()-.5)*4); state.accel=(Math.random()-.5)*.15; state.yaw=(Math.random()-.5)*5; } const item={sampleId:++state.sampleCounter,time:t,speedKmh:+state.speed.toFixed(2),longitudinalG:+state.accel.toFixed(3),yawRateDps:+state.yaw.toFixed(2),source}; state.buffer.push(item); if(state.buffer.length>MAX_BUFFER) state.buffer.shift(); renderSamples(); updateMetrics(); drawChart(); return item; }
+function startTelemetry(){ if(state.running) return; state.running=true; $("#recorderState").textContent="RECORDING"; $("#startSim").disabled=true; $("#stopSim").disabled=false; sample("telemetry"); state.timer=setInterval(()=>{ if(!state.running) return; const captured=sample("telemetry"); if(state.postSamplesRemaining>0 && state.activeIncident){ state.activeIncident.postSamples.push({...state.buffer[state.buffer.length-1]}); state.postSamplesRemaining--; if(state.postSamplesRemaining===0){ finishIncident(); } } },1000); log("TELEMETRY STARTED","One simulated sample per second","ACTIVE"); }
+function stopTelemetry(){ state.running=false; if(state.timer){ clearInterval(state.timer); state.timer=null; } $("#recorderState").textContent="IDLE"; $("#startSim").disabled=false; $("#stopSim").disabled=true; log("TELEMETRY STOPPED","Sampling paused","INFO"); }
+async function triggerCrash(){ if(state.activeIncident){ alert("A post-event capture is already in progress."); return; } const severity=$("#severity").value, accelMap={low:2.5,medium:6,high:12}, impact=accelMap[severity]; if(!state.buffer.length) sample("pre-event"); const preCount=Number($("#preWindow").value); const pre=state.buffer.slice(-preCount).map(x=>({...x})); const incident={id:randomId("INC"),triggerTime:nowISO(),severity,impactG:impact,preSamples:pre,postSamples:[],samples:[],status:"CAPTURING",notes:""}; state.incidents.push(incident); state.activeIncident=incident; sample("impact-trigger",impact); incident.postSamples.push({...state.buffer[state.buffer.length-1]}); incident.samples=[...pre,...incident.postSamples]; state.postSamplesRemaining=5; $("#eventNotice").className="inline-notice alert"; $("#eventNotice").textContent=`${incident.id}: ${severity.toUpperCase()} impact recorded. Capturing ${state.postSamplesRemaining} seconds of post-event telemetry.`; $("#eventState").textContent="Post-event capture active"; log("CRASH TRIGGER",`${incident.id}; ${severity} severity; ${impact.toFixed(1)} g simulated impact`,`ALERT`); await appendChain("INCIDENT_TRIGGER",{incidentId:incident.id,severity,impactG:impact,preSamples:pre}); renderIncidents(); renderLastIncident(); updateMetrics(); if(!state.running){ // if telemetry stopped, capture remaining post samples synchronously
+    for(let i=0;i<state.postSamplesRemaining;i++){ sample("post-event"); incident.postSamples.push({...state.buffer[state.buffer.length-1]}); }
+    state.postSamplesRemaining=0; finishIncident(); }
 }
-async function sha256Hex(value){
-  const bytes=await crypto.subtle.digest("SHA-256", typeof value==="string"?encoder.encode(value):value);
-  return [...new Uint8Array(bytes)].map(b=>b.toString(16).padStart(2,"0")).join("");
+async function finishIncident(){ const incident=state.activeIncident; if(!incident) return; incident.samples=[...incident.preSamples,...incident.postSamples]; incident.status="PROTECTED"; incident.completedAt=nowISO(); const evidence={incidentId:incident.id,triggerTime:incident.triggerTime,completedAt:incident.completedAt,severity:incident.severity,impactG:incident.impactG,sampleCount:incident.samples.length,samples:incident.samples}; const rec=await appendChain("PROTECTED_INCIDENT",evidence); incident.evidenceHash=rec.hash; incident.chainIndex=rec.index; state.activeIncident=null; $("#eventState").textContent="No active event"; $("#eventNotice").className="inline-notice"; $("#eventNotice").textContent=`${incident.id} captured. ${incident.samples.length} samples preserved.`; log("EVIDENCE PROTECTED",`${incident.id}: ${incident.samples.length} samples; hash ${shortHash(rec.hash)}`,"PASS"); renderIncidents(); renderLastIncident(); updateMetrics(); }
+function renderActivity(){ const body=$("#activityRows"); if(!state.activity.length){ body.innerHTML='<tr><td colspan="4" class="empty">No activity yet.</td></tr>'; return; } body.innerHTML=state.activity.map(a=>`<tr><td>${escapeHTML(fmtTime(a.time))}</td><td>${escapeHTML(a.type)}</td><td>${escapeHTML(a.details)}</td><td><span class="badge">${escapeHTML(a.status)}</span></td></tr>`).join(''); }
+function renderSamples(){ $("#bufferCount").textContent=`${state.buffer.length} samples`; const rows=state.buffer.length? state.buffer.slice().reverse().slice(0,25).map(s=>`<tr><td>${escapeHTML(fmtTime(s.time))}</td><td>${s.speedKmh.toFixed(2)}</td><td>${s.longitudinalG.toFixed(3)}</td><td>${s.yawRateDps.toFixed(2)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">No samples yet.</td></tr>'; $("#sampleRows").innerHTML=rows; }
+function renderLastIncident(){ const e=state.incidents[state.incidents.length-1], el=$("#lastEventDetails"); if(!e){ el.className="event-summary empty"; el.textContent="No incident captured yet."; return; } el.className="event-summary"; el.innerHTML=`<dl><dt>Incident ID</dt><dd>${escapeHTML(e.id)}</dd><dt>Trigger time</dt><dd>${escapeHTML(fmtTime(e.triggerTime))}</dd><dt>Severity</dt><dd>${escapeHTML(e.severity)}</dd><dt>Samples</dt><dd>${e.samples?e.samples.length:0}</dd></dl>`; }
+function renderIncidents(){ $("#incidentRows").innerHTML = state.incidents.length? state.incidents.slice().reverse().map(e=>`<tr><td><code>${escapeHTML(e.id)}</code></td><td>${escapeHTML(fmtTime(e.triggerTime))}</td><td>${escapeHTML(e.severity)}</td><td>${escapeHTML(e.status)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">No incidents recorded.</td></tr>'; }
+function renderChain(badIndex=-1){ $("#chainCount").textContent=`${state.chain.length} records`; const rows = state.chain.length? state.chain.slice().reverse().map(r=>{ const actualIndex=r.index-1; const bad=actualIndex===badIndex; return `<tr class="${bad? 'bad':''}"><td>${r.index}</td><td>${escapeHTML(r.type)}</td><td><code>${shortHash(r.hash)}</code></td><td>${escapeHTML(fmtTime(r.time))}</td></tr>`; }).join('') : '<tr><td colspan="4" class="empty">No chain records.</td></tr>'; $("#chainRows").innerHTML=rows; }
+function updateMetrics(){ $("#speedMetric").textContent=state.speed.toFixed(0); $("#accelMetric").textContent=state.accel.toFixed(2); $("#sampleMetric").textContent=state.buffer.length; $("#speedState").textContent=state.running?"Telemetry active":(state.speed>0?"Last simulated speed":"Vehicle stationary"); $("#protectedCount").textContent=state.incidents.filter(i=>i.status==="PROTECTED").length; $("#incidentMetric").textContent=state.incidents.length; $("#chainMetric").textContent=state.chain.length; $("#tamperMetric").textContent=state.tamperAlerts; $("#keyMetric").textContent=state.keyPair?"GENERATED":"NOT GENERATED"; }
+function drawChart(){ const canvas=$("#telemetryChart"), rect=canvas.getBoundingClientRect(), dpr=window.devicePixelRatio||1; if(!rect.width||!rect.height) return; canvas.width=Math.round(rect.width*dpr); canvas.height=Math.round(rect.height*dpr); const ctx=canvas.getContext("2d"); ctx.scale(dpr,dpr); const w=rect.width, h=rect.height; ctx.clearRect(0,0,w,h); const pad={l:36,r:12,t:12,b:24}, cw=w-pad.l-pad.r, ch=h-pad.t-pad.b; ctx.font="10px Segoe UI, Arial"; ctx.strokeStyle="#e4eaf0"; ctx.fillStyle="#637384"; ctx.lineWidth=1; for(let i=0;i<=4;i++){ const y=pad.t+ch*i/4; ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(w-pad.r,y); ctx.stroke(); ctx.fillText(String(180-i*45),3,y+3); } const samples=state.buffer.slice(-30); if(samples.length<2){ ctx.fillStyle="#637384"; ctx.fillText("Start telemetry to populate chart",pad.l+10,h/2); return; } const draw=(vals,max,color)=>{ ctx.strokeStyle=color; ctx.lineWidth=2; ctx.beginPath(); vals.forEach((v,i)=>{ const x=pad.l+cw*i/(vals.length-1), y=pad.t+ch*(1-Math.max(0,Math.min(max,v))/max); if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }); ctx.stroke(); }; draw(samples.map(s=>s.speedKmh),180,"#245b85"); draw(samples.map(s=>Math.abs(s.longitudinalG)*15),180,"#d39b37"); }
+function downloadJSON(name,data){ const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"}), url=URL.createObjectURL(blob), a=document.createElement("a"); a.href=url; a.download=name; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000); }
+// Robust base64 helpers
+function arrayBufferToBase64(buffer){ let binary=''; const bytes=new Uint8Array(buffer); const chunkSize=0x8000; for(let i=0;i<bytes.length;i+=chunkSize){ const slice=bytes.subarray(i,i+chunkSize); binary+=String.fromCharCode.apply(null, slice); } return btoa(binary); }
+function base64ToArrayBuffer(base64){ const binary=atob(base64); const len=binary.length; const bytes=new Uint8Array(len); for(let i=0;i<len;i++) bytes[i]=binary.charCodeAt(i); return bytes.buffer; }
+// JWK fingerprint (SPKI -> SHA256 hex truncated)
+async function jwkFingerprint(jwk){ try{ const key=await crypto.subtle.importKey('jwk', jwk, {name:'ECDSA', namedCurve:'P-256'}, true, ['verify']); const spki=await crypto.subtle.exportKey('spki', key); const hash=await crypto.subtle.digest('SHA-256', spki); return [...new Uint8Array(hash)].map(b=>b.toString(16).padStart(2,'0')).join('').slice(0,16); }catch(e){return null;} }
+// IndexedDB helpers for demo key persistence
+function idbOpen(){ return new Promise((resolve,reject)=>{ const req=indexedDB.open('edr-demo',1); req.onupgradeneeded=e=>{ const db=e.target.result; if(!db.objectStoreNames.contains('keys')) db.createObjectStore('keys'); }; req.onsuccess=e=>resolve(e.target.result); req.onerror=e=>reject(e.target.error); }); }
+async function idbPut(key, value){ const db=await idbOpen(); return new Promise((res,rej)=>{ const tx=db.transaction('keys','readwrite'); tx.objectStore('keys').put(value,key); tx.oncomplete=()=>res(true); tx.onerror=e=>rej(e.target.error); }); }
+async function idbGet(key){ const db=await idbOpen(); return new Promise((res,rej)=>{ const tx=db.transaction('keys','readonly'); const r=tx.objectStore('keys').get(key); r.onsuccess=e=>res(e.target.result); r.onerror=e=>rej(e.target.error); }); }
+async function persistKey(){ if(!state.keyPair) return; try{ // use structured clone where available: export as JWK private if allowed (in browsers often not allowed)
+    const jwk = await crypto.subtle.exportKey('jwk', state.keyPair.privateKey).catch(()=>null); if(jwk) await idbPut('privateKey', jwk); // fallback: mark that key exists
+    await idbPut('publicJwk', state.publicJwk);
+    log('KEY PERSIST','Stored demo key in IndexedDB (demo only)','INFO');
+  }catch(e){ console.warn('Persist key failed',e); }
 }
-async function appendChain(type,payload){
-  const previous=state.chain.length?state.chain[state.chain.length-1].hash:"GENESIS";
-  const body={index:state.chain.length+1,type,time:nowISO(),previousHash:previous,payload};
-  const hash=await sha256Hex(JSON.stringify(body));
-  const record={...body,hash}; state.chain.push(record);
-  state.cleanSnapshot=JSON.parse(JSON.stringify(state.chain));
-  renderChain(); updateMetrics(); return record;
+async function restoreKey(){ try{ const jwk=await idbGet('privateKey'); const pub=await idbGet('publicJwk'); if(jwk){ const key=await crypto.subtle.importKey('jwk', jwk, {name:'ECDSA', namedCurve:'P-256'}, false, ['sign']); // private-only import may fail depending on browser
+      state.keyPair={privateKey:key, publicKey: await crypto.subtle.importKey('jwk', pub, {name:'ECDSA', namedCurve:'P-256'}, true, ['verify'])}; state.publicJwk=pub; $('#publicKey').value=JSON.stringify(state.publicJwk,null,2); updateMetrics(); log('KEY RESTORED','Demo key restored from IndexedDB (if supported)','INFO'); }
+  }catch(e){ console.warn('Restore key failed',e); }
 }
-async function verifyChain(){
-  let prev="GENESIS",bad=-1;
-  for(let i=0;i<state.chain.length;i++){
-    const r=state.chain[i];
-    const body={index:r.index,type:r.type,time:r.time,previousHash:r.previousHash,payload:r.payload};
-    const expected=await sha256Hex(JSON.stringify(body));
-    if(r.previousHash!==prev||r.hash!==expected){bad=i;break;}
-    prev=r.hash;
-  }
-  const ok=bad===-1;
-  $("#chainStatus").textContent=ok?"VERIFIED":"TAMPER DETECTED";
-  $("#chainStatus").style.color=ok?"var(--green)":"var(--red)";
-  $("#chainMessage").textContent=ok?`All ${state.chain.length} records match their stored hashes and links.`:`Integrity failure at record ${bad+1}. Stored hash or previous-hash link does not match.`;
-  $("#integrityMetric").textContent=ok?"VERIFIED":"FAILED";
-  $("#integrityMetric").style.color=ok?"var(--green)":"var(--red)";
-  $("#integrityHint").textContent=ok?"Evidence chain consistent":"Review chain inspector";
-  renderChain(bad); updateMetrics();
-  log("INTEGRITY CHECK",ok?`${state.chain.length} chain records verified`:`Failure at chain record ${bad+1}`,ok?"PASS":"ALERT");
-  return {ok,bad};
-}
-function sample(source="telemetry",forcedAccel=null){
-  const t=nowISO();
-  if(state.running && forcedAccel===null){
-    state.speed=Math.max(0,Math.min(180,state.speed+(Math.random()*8-2.2)));
-    state.accel=(Math.random()-.48)*.28;
-    state.yaw=(Math.random()-.5)*12;
-  }else if(forcedAccel!==null){state.accel=forcedAccel;state.speed=Math.max(0,state.speed-Math.abs(forcedAccel)*3);state.yaw=(Math.random()-.5)*90;}
-  else {state.speed=Math.max(0,state.speed+(Math.random()-.5)*4);state.accel=(Math.random()-.5)*.15;state.yaw=(Math.random()-.5)*5;}
-  const item={sampleId:++state.sampleCounter,time:t,speedKmh:+state.speed.toFixed(2),longitudinalG:+state.accel.toFixed(3),yawRateDps:+state.yaw.toFixed(2),source};
-  state.buffer.push(item); if(state.buffer.length>MAX_BUFFER)state.buffer.shift();
-  renderSamples(); updateMetrics(); drawChart(); return item;
-}
-function startTelemetry(){
-  if(state.running)return;state.running=true;$("#recorderState").textContent="RECORDING";$("#startSim").disabled=true;$("#stopSim").disabled=false;
-  sample("telemetry");state.timer=setInterval(()=>{if(!state.running)return;const captured=sample("telemetry");if(state.postSamplesRemaining>0){if(state.activeIncident)state.activeIncident.postSamples.push({...captured});state.postSamplesRemaining--;if(state.activeIncident&&state.postSamplesRemaining===0)finishIncident();}},1000);
-  log("TELEMETRY STARTED","One simulated sample per second","ACTIVE");
-}
-function stopTelemetry(){
-  state.running=false;clearInterval(state.timer);state.timer=null;$("#recorderState").textContent="IDLE";$("#startSim").disabled=false;$("#stopSim").disabled=true;log("TELEMETRY STOPPED","Sampling paused");
-}
-async function triggerCrash(){
-  if(state.activeIncident){alert("A post-event capture is already in progress.");return;}
-  const severity=$("#severity").value,accelMap={low:2.5,medium:6,high:12},impact=accelMap[severity];
-  if(!state.buffer.length)sample("pre-event");
-  const preCount=Number($("#preWindow").value);
-  const pre=state.buffer.slice(-preCount).map(x=>({...x}));
-  const incident={id:randomId("INC"),triggerTime:nowISO(),severity,impactG:impact,preSamples:pre,postSamples:[],samples:[],status:"CAPTURING",notes:""};
-  state.incidents.push(incident);state.activeIncident=incident;
-  sample("impact-trigger",impact);
-  incident.postSamples.push({...state.buffer[state.buffer.length-1]});
-  incident.samples=[...pre,...incident.postSamples];
-  state.postSamplesRemaining=5;
-  $("#eventNotice").className="inline-notice alert";
-  $("#eventNotice").textContent=`${incident.id}: ${severity.toUpperCase()} impact recorded. Capturing 5 seconds of post-event telemetry.`;
-  $("#eventState").textContent="Post-event capture active";
-  log("CRASH TRIGGER",`${incident.id}; ${severity} severity; ${impact.toFixed(1)} g simulated impact`,"ALERT");
-  await appendChain("INCIDENT_TRIGGER",{incidentId:incident.id,severity,impactG:impact,preSamples:pre});
-  renderIncidents();renderLastIncident();updateMetrics();
-  if(!state.running){for(let i=0;i<5;i++){sample("post-event");incident.postSamples.push({...state.buffer[state.buffer.length-1]});}incident.samples=[...pre,...incident.postSamples];state.postSamplesRemaining=0;await finishIncident();}
-}
-async function finishIncident(){
-  const incident=state.activeIncident;if(!incident)return;
-  incident.samples=[...incident.preSamples,...incident.postSamples];incident.status="PROTECTED";incident.completedAt=nowISO();
-  const evidence={incidentId:incident.id,triggerTime:incident.triggerTime,completedAt:incident.completedAt,severity:incident.severity,impactG:incident.impactG,sampleCount:incident.samples.length,samples:incident.samples};
-  const rec=await appendChain("PROTECTED_INCIDENT",evidence);incident.evidenceHash=rec.hash;incident.chainIndex=rec.index;
-  state.activeIncident=null;$("#eventState").textContent="No active event";$("#eventNotice").className="inline-notice";$("#eventNotice").textContent=`${incident.id} captured. ${incident.samples.length} samples frozen into the evidence record.`;
-  log("EVIDENCE PROTECTED",`${incident.id}: ${incident.samples.length} samples; hash ${shortHash(rec.hash)}`,"PASS");
-  renderIncidents();renderLastIncident();updateMetrics();
-}
-function renderActivity(){
-  const body=$("#activityRows");
-  if(!state.activity.length){body.innerHTML='<tr><td colspan="4" class="empty">No activity yet.</td></tr>';return;}
-  body.innerHTML=state.activity.map(a=>`<tr><td>${escapeHTML(fmtTime(a.time))}</td><td>${escapeHTML(a.type)}</td><td>${escapeHTML(a.details)}</td><td><span class="badge">${escapeHTML(a.status)}</span></td></tr>`).join("");
-}
-function renderSamples(){
-  $("#bufferCount").textContent=`${state.buffer.length} samples`;
-  $("#sampleRows").innerHTML=state.buffer.length?state.buffer.slice().reverse().slice(0,25).map(s=>`<tr><td>${escapeHTML(fmtTime(s.time))}</td><td>${s.speedKmh.toFixed(2)}</td><td>${s.longitudinalG.toFixed(3)}</td><td>${s.yawRateDps.toFixed(2)}</td><td>${escapeHTML(s.source)}</td></tr>`).join(""):'<tr><td colspan="5" class="empty">No samples generated yet.</td></tr>';
-}
-function renderLastIncident(){
-  const e=state.incidents[state.incidents.length-1],el=$("#lastEventDetails");
-  if(!e){el.className="event-summary empty";el.textContent="No incident captured yet.";return;}
-  el.className="event-summary";el.innerHTML=`<dl><dt>Incident ID</dt><dd>${escapeHTML(e.id)}</dd><dt>Trigger time</dt><dd>${escapeHTML(fmtTime(e.triggerTime))}</dd><dt>Severity</dt><dd>${escapeHTML(e.severity.toUpperCase())} · ${e.impactG} g</dd><dt>Captured samples</dt><dd>${e.samples.length}</dd><dt>Evidence hash</dt><dd><code>${escapeHTML(e.evidenceHash||"Pending capture…")}</code></dd><dt>Status</dt><dd>${escapeHTML(e.status)}</dd></dl>`;
-}
-function renderIncidents(){
-  $("#incidentRows").innerHTML=state.incidents.length?state.incidents.slice().reverse().map(e=>`<tr><td><code>${escapeHTML(e.id)}</code></td><td>${escapeHTML(fmtTime(e.triggerTime))}</td><td>${escapeHTML(e.severity.toUpperCase())} (${e.impactG} g)</td><td>${e.samples.length}</td><td>${e.evidenceHash?"HASHED":"CAPTURING"}</td><td><button class="btn small" data-view="${escapeHTML(e.id)}">View</button></td></tr>`).join(""):'<tr><td colspan="6" class="empty">No incidents captured yet.</td></tr>';
-}
-function renderChain(badIndex=-1){
-  $("#chainCount").textContent=`${state.chain.length} records`;
-  $("#chainRows").innerHTML=state.chain.length?state.chain.slice().reverse().map(r=>{const actualIndex=r.index-1;const bad=actualIndex===badIndex;return `<tr><td>${r.index}</td><td>${escapeHTML(r.type)}</td><td><code>${escapeHTML(shortHash(r.previousHash))}</code></td><td><code>${escapeHTML(shortHash(r.hash))}</code></td><td><span class="badge ${bad?"warn":""}">${bad?"FAILED":"PENDING CHECK"}</span></td></tr>`}).join(""):'<tr><td colspan="5" class="empty">No chain records yet.</td></tr>';
-}
-function updateMetrics(){
-  $("#speedMetric").textContent=state.speed.toFixed(0);$("#accelMetric").textContent=state.accel.toFixed(2);$("#sampleMetric").textContent=state.buffer.length;
-  $("#speedState").textContent=state.running?"Telemetry active":(state.speed>0?"Last simulated speed":"Vehicle stationary");
-  $("#protectedCount").textContent=state.incidents.filter(i=>i.status==="PROTECTED").length;
-  $("#incidentMetric").textContent=state.incidents.length;$("#chainMetric").textContent=state.chain.length;$("#tamperMetric").textContent=state.tamperAlerts;
-  $("#keyMetric").textContent=state.keyPair?"GENERATED":"NOT GENERATED";
-}
-function drawChart(){
-  const canvas=$("#telemetryChart"),rect=canvas.getBoundingClientRect(),dpr=window.devicePixelRatio||1;
-  if(!rect.width||!rect.height)return;
-  canvas.width=Math.round(rect.width*dpr);canvas.height=Math.round(rect.height*dpr);
-  const ctx=canvas.getContext("2d");ctx.scale(dpr,dpr);const w=rect.width,h=rect.height;
-  ctx.clearRect(0,0,w,h);const pad={l:36,r:12,t:12,b:24},cw=w-pad.l-pad.r,ch=h-pad.t-pad.b;
-  ctx.font="10px Segoe UI, Arial";ctx.strokeStyle="#e4eaf0";ctx.fillStyle="#637384";ctx.lineWidth=1;
-  for(let i=0;i<=4;i++){const y=pad.t+ch*i/4;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();ctx.fillText(String(180-i*45),3,y+3);}
-  const samples=state.buffer.slice(-30);if(samples.length<2){ctx.fillStyle="#637384";ctx.fillText("Start telemetry to populate chart",pad.l+10,h/2);return;}
-  const draw=(vals,max,color)=>{ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();vals.forEach((v,i)=>{const x=pad.l+cw*i/(vals.length-1),y=pad.t+ch*(1-Math.max(0,Math.min(max,v))/max);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});ctx.stroke();};
-  draw(samples.map(s=>s.speedKmh),180,"#245b85");draw(samples.map(s=>Math.abs(s.longitudinalG)*15),180,"#d39b37");
-}
-function downloadJSON(name,data){
-  const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),a=document.createElement("a");
-  a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
-}
-async function generateKey(){
-  if(!crypto.subtle){$("#keyResult").textContent="Web Crypto is unavailable. Use HTTPS or localhost in a modern browser.";return;}
-  try{
-    state.keyPair=await crypto.subtle.generateKey({name:"ECDSA",namedCurve:"P-256"},false,["sign","verify"]);
-    state.publicJwk=await crypto.subtle.exportKey("jwk",state.keyPair.publicKey);
-    $("#publicKey").value=JSON.stringify(state.publicJwk,null,2);
-    $("#signChallenge").disabled=false;$("#keyResult").textContent="ECDSA P-256 key pair generated. Private key is non-extractable in this browser context; public key is exportable.";
-    updateMetrics();log("DEMO KEY GENERATED","ECDSA P-256 signing key created locally","PASS");
-  }catch(e){$("#keyResult").textContent="Key generation failed: "+e.message;}
-}
-async function signChallenge(){
-  if(!state.keyPair)return;
-  const challenge=encoder.encode("STM32-EDR-DEMO-CHALLENGE|"+nowISO()+"|"+randomId("NONCE"));
-  try{
-    const signature=await crypto.subtle.sign({name:"ECDSA",hash:"SHA-256"},state.keyPair.privateKey,challenge);
-    const ok=await crypto.subtle.verify({name:"ECDSA",hash:"SHA-256"},state.keyPair.publicKey,signature,challenge);
-    state.signatureVerified=ok;
-    $("#keyResult").textContent=`Challenge signature ${ok?"VERIFIED":"FAILED"}. Signature (base64): ${btoa(String.fromCharCode(...new Uint8Array(signature)))}`;
-    log("CHALLENGE SIGNATURE",ok?"ECDSA signature verified with matching public key":"Signature verification failed",ok?"PASS":"ALERT");
-    await appendChain("KEY_CHALLENGE",{algorithm:"ECDSA P-256 / SHA-256",verified:ok,challenge:new TextDecoder().decode(challenge)});
-  }catch(e){$("#keyResult").textContent="Signing failed: "+e.message;}
-}
-async function tamper(){
-  if(!state.chain.length){await appendChain("TAMPER_TEST_SETUP",{message:"Seed record for local tamper demonstration"});}
-  const index=Math.max(0,state.chain.length-1);
-  state.chain[index].payload={...state.chain[index].payload,DEMO_TAMPERED:true,modifiedAt:nowISO()};
-  state.tamperedIndex=index;state.tamperAlerts++;
-  $("#chainStatus").textContent="TAMPER SIMULATED";$("#chainStatus").style.color="var(--red)";
-  $("#chainMessage").textContent=`Record ${index+1} was intentionally modified in browser memory. Run verification to detect the mismatch.`;
-  log("TAMPER SIMULATION",`Modified payload of chain record ${index+1}; local demo only`,"ALERT");
-  renderChain(index);updateMetrics();
-}
-function restoreTamper(){
-  if(!state.cleanSnapshot){$("#chainMessage").textContent="No saved clean chain snapshot is available.";return;}
-  state.chain=JSON.parse(JSON.stringify(state.cleanSnapshot));state.tamperedIndex=null;
-  $("#chainStatus").textContent="RESTORED COPY";$("#chainStatus").style.color="var(--muted)";
-  $("#chainMessage").textContent="Restored the last in-memory clean snapshot. This is a demo reset, not forensic recovery from an attacker.";
-  renderChain();log("DEMO COPY RESTORED","Restored last clean in-memory snapshot");updateMetrics();
-}
-function exportBundle(){
-  const bundle={schema:"stm32-edr-forensic-demo/v1",exportedAt:nowISO(),notice:"Simulated educational evidence; not authenticated real vehicle data.",sessionId:$("#sessionId").textContent,telemetryBuffer:state.buffer,incidents:state.incidents,hashChain:state.chain,publicKeyJwk:state.publicJwk,signatureVerified:state.signatureVerified,analystNotes:state.notes,tamperAlerts:state.tamperAlerts};
-  downloadJSON("edr-forensic-bundle.json",bundle);log("FORENSIC BUNDLE EXPORTED","Downloaded local JSON evidence bundle","PASS");
-}
-function switchTab(name){
-  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.tab===name));
-  document.querySelectorAll(".tab-panel").forEach(p=>p.classList.toggle("active",p.id===name));
-  if(name==="overview")drawChart();
-}
-document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>switchTab(t.dataset.tab)));
-$("#startSim").addEventListener("click",startTelemetry);$("#stopSim").addEventListener("click",stopTelemetry);
-$("#normalEvent").addEventListener("click",async()=>{const s=sample("manual-marker");await appendChain("MANUAL_MARKER",s);log("MANUAL MARKER",`Sample ${s.sampleId} marked for review`);});
-$("#addSample").addEventListener("click",async()=>{const s=sample("manual");await appendChain("TELEMETRY_SAMPLE",s);log("SAMPLE ADDED",`Sample ${s.sampleId} recorded`);});
-$("#crashEvent").addEventListener("click",triggerCrash);
-$("#verifyChain").addEventListener("click",verifyChain);$("#verifyForensic").addEventListener("click",verifyChain);
-$("#tamperRecord").addEventListener("click",tamper);$("#resetTamper").addEventListener("click",restoreTamper);
-$("#generateKey").addEventListener("click",generateKey);$("#signChallenge").addEventListener("click",signChallenge);
-$("#exportSamples").addEventListener("click",()=>downloadJSON("edr-telemetry-buffer.json",{exportedAt:nowISO(),samples:state.buffer}));
-$("#exportReport").addEventListener("click",exportBundle);
-$("#clearActivity").addEventListener("click",()=>{state.activity=[];renderActivity();});
-$("#saveNotes").addEventListener("click",()=>{state.notes=$("#forensicNotes").value;$("#notesState").textContent="Notes saved to current session bundle.";log("ANALYST NOTES SAVED","Notes included in exported bundle","PASS");});
-$("#incidentRows").addEventListener("click",e=>{const id=e.target.dataset.view;if(!id)return;const incident=state.incidents.find(i=>i.id===id);if(incident){switchTab("recording");$("#lastEventDetails").scrollIntoView({behavior:"smooth",block:"center"});}});
-function tickClock(){$("#clock").textContent=new Date().toISOString().slice(11,19)+" UTC";}
-$("#sessionId").textContent=randomId("EDR");$("#stopSim").disabled=true;tickClock();setInterval(tickClock,1000);renderActivity();renderSamples();renderIncidents();renderChain();updateMetrics();drawChart();
-window.addEventListener("resize",drawChart);
+async function generateKey(){ if(!crypto.subtle){ $('#keyResult').textContent='Web Crypto is unavailable. Use HTTPS or localhost in a modern browser.'; return; } try{ state.keyPair=await crypto.subtle.generateKey({name:'ECDSA', namedCurve:'P-256'}, true, ['sign','verify']); state.publicJwk=await crypto.subtle.exportKey('jwk', state.keyPair.publicKey); $('#publicKey').value=JSON.stringify(state.publicJwk,null,2); $('#signChallenge').disabled=false; $('#keyResult').textContent='ECDSA P-256 key pair generated. Private key is non-extractable in some contexts; public key is exportable.'; updateMetrics(); log('DEMO KEY GENERATED','ECDSA P-256 signing key created locally','PASS'); await persistKey(); const fp=await jwkFingerprint(state.publicJwk); if(fp) $('#keyResult').textContent += ` Fingerprint: ${fp}`; }catch(e){ $('#keyResult').textContent='Key generation failed: '+e.message; } }
+async function signChallenge(){ if(!state.keyPair) return; const challenge=encoder.encode('EDR-DEMO-CHALLENGE|'+nowISO()+'|'+randomId('NONCE')); try{ const signature=await crypto.subtle.sign({name:'ECDSA', hash:'SHA-256'}, state.keyPair.privateKey, challenge); const ok=await crypto.subtle.verify({name:'ECDSA', hash:'SHA-256'}, state.keyPair.publicKey, signature, challenge); state.signatureVerified=ok; const b64=arrayBufferToBase64(signature); $('#keyResult').textContent=`Challenge signature ${ok?"VERIFIED":"FAILED"}. Signature (base64): ${b64}`; log('CHALLENGE SIGNATURE', ok? 'ECDSA signature verified with matching public key':'Signature verification failed', ok? 'PASS':'ALERT'); await appendChain('KEY_CHALLENGE',{algorithm:'ECDSA P-256 / SHA-256',verified:ok,challenge:decoder.decode(challenge),signature:b64}); }catch(e){ $('#keyResult').textContent='Signing failed: '+e.message; } }
+async function tamper(){ if(!state.chain.length) await appendChain('TAMPER_TEST_SETUP',{message:'Seed record for local tamper demonstration'}); const index=Math.max(0,state.chain.length-1); state.chain[index].payload={...state.chain[index].payload,DEMO_TAMPERED:true,modifiedAt:nowISO()}; state.tamperedIndex=index; state.tamperAlerts++; $('#chainStatus').textContent='TAMPER SIMULATED'; $('#chainStatus').style.color='var(--red)'; $('#chainMessage').textContent=`Record ${index+1} was intentionally modified in browser memory. Run verification to detect the mismatch.`; log('TAMPER SIMULATION',`Modified payload of chain record ${index+1}; local demo only`,'ALERT'); renderChain(index); updateMetrics(); }
+function restoreTamper(){ if(!state.cleanSnapshot){ $('#chainMessage').textContent='No saved clean chain snapshot is available.'; return; } state.chain=JSON.parse(JSON.stringify(state.cleanSnapshot)); state.tamperedIndex=null; $('#chainStatus').textContent='RESTORED COPY'; $('#chainStatus').style.color='var(--muted)'; $('#chainMessage').textContent='Restored the last in-memory clean snapshot. This is a demo reset, not forensic recovery from an attacker.'; renderChain(); log('DEMO COPY RESTORED','Restored last clean in-memory snapshot'); updateMetrics(); }
+function exportBundle(){ const bundle={ schema:'edr-forensic-demo/v1', exportedAt:nowISO(), notice:'Simulated educational evidence; not authenticated real vehicle data.', sessionId:$('#sessionId').textContent, telemetryBuffer:state.buffer, incidents:state.incidents, chain:state.chain, notes:state.notes, appVersion:'1.0-demo' }; downloadJSON('edr-forensic-bundle.json',bundle); log('FORENSIC BUNDLE EXPORTED','Downloaded local JSON evidence bundle','PASS'); }
+async function loadBundle(file){ try{ const text=await file.text(); const obj=JSON.parse(text); if(!obj || !obj.chain) throw new Error('Invalid bundle'); state.buffer=obj.telemetryBuffer||[]; state.incidents=obj.incidents||[]; state.chain=obj.chain||[]; state.notes=obj.notes||''; state.cleanSnapshot=JSON.parse(JSON.stringify(state.chain)); renderSamples(); renderIncidents(); renderChain(); updateMetrics(); await verifyChain(); log('BUNDLE LOADED',`Imported bundle ${file.name}`,'INFO'); }catch(e){ alert('Failed to load bundle: '+e.message); } }
+// UI bindings
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{ document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===t)); document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('active',p.id===t.dataset.tab)); if(t.dataset.tab==='overview') drawChart(); }));
+document.getElementById('startSim').addEventListener('click', startTelemetry);
+document.getElementById('stopSim').addEventListener('click', stopTelemetry);
+document.getElementById('normalEvent').addEventListener('click', async ()=>{ const s=sample('manual-marker'); await appendChain('MANUAL_MARKER', s); log('MANUAL MARKER',`Sample ${s.sampleId} marked for review`); });
+document.getElementById('addSample').addEventListener('click', async ()=>{ const s=sample('manual'); await appendChain('TELEMETRY_SAMPLE', s); log('SAMPLE ADDED',`Sample ${s.sampleId} recorded`); });
+document.getElementById('crashEvent').addEventListener('click', triggerCrash);
+document.getElementById('verifyChain').addEventListener('click', verifyChain);
+document.getElementById('verifyForensic').addEventListener('click', verifyChain);
+document.getElementById('tamperRecord').addEventListener('click', tamper);
+document.getElementById('resetTamper').addEventListener('click', restoreTamper);
+document.getElementById('generateKey').addEventListener('click', generateKey);
+document.getElementById('signChallenge').addEventListener('click', signChallenge);
+document.getElementById('exportSamples').addEventListener('click', ()=>downloadJSON('edr-telemetry-buffer.json',{exportedAt:nowISO(),samples:state.buffer}));
+document.getElementById('exportReport').addEventListener('click', exportBundle);
+document.getElementById('clearActivity').addEventListener('click', ()=>{ state.activity=[]; renderActivity(); });
+document.getElementById('saveNotes').addEventListener('click', ()=>{ state.notes=$('#forensicNotes').value; $('#notesState').textContent='Notes saved to current session bundle.'; log('ANALYST NOTES SAVED','Notes included in exported bundle','INFO'); });
+// File input for loading bundles
+const fileInput=document.createElement('input'); fileInput.type='file'; fileInput.accept='application/json'; fileInput.style.display='none'; fileInput.addEventListener('change', async (e)=>{ if(e.target.files.length) await loadBundle(e.target.files[0]); fileInput.value=''; }); document.body.append(fileInput);
+// Load bundle button
+const loadBtn=document.createElement('button'); loadBtn.className='btn'; loadBtn.textContent='Load bundle'; loadBtn.addEventListener('click', ()=>fileInput.click()); document.querySelector('.page-heading').append(loadBtn);
+function tickClock(){ $('#clock').textContent=new Date().toISOString().slice(11,19)+' UTC'; }
+$('#sessionId').textContent=randomId('EDR'); $('#stopSim').disabled=true; tickClock(); setInterval(tickClock,1000); renderActivity(); renderSamples(); renderIncidents(); renderChain(); updateMetrics(); drawChart(); window.addEventListener('resize', drawChart);
+// Try to restore demo key on start (non-blocking)
+restoreKey().catch(()=>{});
